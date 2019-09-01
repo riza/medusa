@@ -16,6 +16,34 @@ Blazingly fast directory fuzzer for HTTP
 $ go build -tags netgo -installsuffix netgo
 ```
 
+## Usage
+
+```bash
+Usage of ./medusa:
+  -D string
+        Multiple dir from file
+  -H string
+        Multiple host from file
+  -boundary int
+        Concurrent boundary limit (default 1024)
+  -cc string
+        Collect status code (--c 403,404) (default "200")
+  -cpu int
+        CPU Procs
+  -d string
+        Singular dir
+  -depth int
+        Depth level
+  -h string
+        Singular host
+  -o string
+        Output filename (default "output.txt")
+  -retry int
+        Retry limit per host (default 3)
+  -timeout duration
+        HTTP response timeout (default 500ns)
+```
+
 ## Contributing
 Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
 Please make sure to update tests as appropriate.
