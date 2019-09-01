@@ -1,0 +1,7 @@
+medusa
+.vscode/
+vendor/
+big.txt
+common.txt
+urls.txt
+output.txt
