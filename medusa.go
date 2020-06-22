@@ -2,10 +2,15 @@ package main
 
 import (
 	"bufio"
+	"crypto/tls"
 	"flag"
 	"fmt"
+	"log"
+	"net/http"
+	"net/url"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -45,14 +50,18 @@ var (
 
 //hit All found URLs are collected as hits.
 type hit struct {
-	m      sync.RWMutex
 	url    string
-	result map[string]string // [200]/info
+	status int
 }
 
 type hits struct {
 	m sync.RWMutex
 	l map[string]hit
+}
+
+type scan struct {
+	m sync.RWMutex
+	l map[string][]string
 }
 
 var usage = `Usage: medusa [options...]
@@ -89,6 +98,8 @@ medusa v%s by rizasabuncu
 [*] Wordlist length: %d
 -----------------------------------------
 `
+var wg sync.WaitGroup
+var httpClient *http.Client
 
 func main() {
 	flag.Usage = func() {
@@ -164,24 +175,16 @@ func main() {
 		*wl, len(wordlist),
 	)
 
-	var h = &hits{}
-	h.l = make(map[string]hit)
+	var scanl = &scan{}
+	scanl.l = make(map[string][]string)
 
-	// TODO
-	//
+	var hits = &hits{}
+	hits.l = make(map[string]hit)
 
-	/* client := &http.Client{Transport: &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout:   5 * time.Second,
-			KeepAlive: 5 * time.Second,
-		}).DialContext,
-		TLSHandshakeTimeout:   5 * time.Second,
-		ResponseHeaderTimeout: 5 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		MaxIdleConnsPerHost:   -1,
-	}} */
-
+	fmt.Println("URL list generating to memory..")
+	//url generator
 	for _, u := range urls {
+		scanl.l[u] = []string{}
 		for _, w := range wordlist {
 			var url = u
 
@@ -206,7 +209,79 @@ func main() {
 			}
 
 			url = url + w
+			scanl.l[u] = append(scanl.l[u], url)
 		}
+
+	}
+
+	c := make(chan hit)
+	wg.Add(len(scanl.l) * len(wordlist))
+
+	httpClient = &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		//		Timeout: 200 * time.Millisecond,
+		Transport: &http.Transport{
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 100,
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: *insecure,
+			},
+		},
+	}
+
+	for _, urls := range scanl.l {
+		for _, path := range urls {
+			scanl.m.RLock()
+			go check(path, c)
+			scanl.m.RUnlock()
+		}
+	}
+
+	for {
+		h, ok := <-c
+		if !ok {
+			fmt.Println("chan broken")
+		}
+
+		if h.status == 200 {
+			fmt.Println("[" + strconv.Itoa(h.status) + "] " + h.url)
+		}
+	}
+
+	wg.Wait()
+
+	fmt.Println("finito.")
+}
+
+func check(u string, c chan hit) {
+	defer wg.Done()
+
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		fmt.Println(err.Error())
+		return
+		c <- hit{
+			url:    u,
+			status: 404,
+		}
+		if ue, ok := err.(*url.Error); ok {
+			if strings.HasPrefix(ue.Err.Error(), "x509") {
+				log.Fatal(fmt.Sprintf("invalid certificate: %v", ue.Err))
+			}
+		}
+		return
+	}
+
+	c <- hit{
+		url:    u,
+		status: resp.StatusCode,
 	}
 }
 
