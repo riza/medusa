@@ -2,17 +2,15 @@ package main
 
 import (
 	"bufio"
-	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -40,10 +38,12 @@ var (
 	s               = flag.String("s", "", "")
 	insecure        = flag.Bool("x", false, "")
 	followRedirects = flag.Bool("follow", false, "")
-	recursive       = flag.Bool("r", false, "Enable recursive fuzzing")
+	recursive       = flag.Bool("r", false, "")
 
 	rcp = flag.String("rcP", "200", "")
 	wl  = flag.String("w", "", "")
+
+	conc = flag.Int("conc", 100, "")
 
 	cpus = flag.Int("cpus", runtime.GOMAXPROCS(-1), "")
 )
@@ -59,9 +59,9 @@ type hits struct {
 	l map[string]hit
 }
 
-type scan struct {
-	m sync.RWMutex
-	l map[string][]string
+type response struct {
+	*http.Response
+	err error
 }
 
 var usage = `Usage: medusa [options...]
@@ -74,9 +74,11 @@ Options:
 -cP                   Postive status codes (seperate by comma)
 -cN                   Negative status codes (seperate by comma)
 -x                    Bypass SSL verification
--r                    Follow redirects
+-follow               Follow redirects
+-r                    Enable recursive fuzzing
 -rcP                  Positive status codes for recursive fuzzing (seperate by comma)
 -w                    Directory wordlist (line by line)
+-conc                 Maximum concurrent requests
 -cpus                 Number of used cpu cores.
 (default for current machine is %d cores)
 `
@@ -98,8 +100,6 @@ medusa v%s by rizasabuncu
 [*] Wordlist length: %d
 -----------------------------------------
 `
-var wg sync.WaitGroup
-var httpClient *http.Client
 
 func main() {
 	flag.Usage = func() {
@@ -175,16 +175,19 @@ func main() {
 		*wl, len(wordlist),
 	)
 
-	var scanl = &scan{}
-	scanl.l = make(map[string][]string)
+	/* var scanl = &scan{}
+	scanl.l = make(map[string][]string) */
 
 	var hits = &hits{}
 	hits.l = make(map[string]hit)
 
-	fmt.Println("URL list generating to memory..")
-	//url generator
+	reqChan := make(chan *http.Request)
+	respChan := make(chan response)
+
+	totalReq := len(urls) * len(wordlist)
+
 	for _, u := range urls {
-		scanl.l[u] = []string{}
+
 		for _, w := range wordlist {
 			var url = u
 
@@ -209,80 +212,83 @@ func main() {
 			}
 
 			url = url + w
-			scanl.l[u] = append(scanl.l[u], url)
-		}
-
-	}
-
-	c := make(chan hit)
-	wg.Add(len(scanl.l) * len(wordlist))
-
-	httpClient = &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-		//		Timeout: 200 * time.Millisecond,
-		Transport: &http.Transport{
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 100,
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: *insecure,
-			},
-		},
-	}
-
-	for _, urls := range scanl.l {
-		for _, path := range urls {
-			scanl.m.RLock()
-			go check(path, c)
-			scanl.m.RUnlock()
+			go dispatcher(url, reqChan)
 		}
 	}
 
-	for {
-		h, ok := <-c
-		if !ok {
-			fmt.Println("chan broken")
-		}
+	start := time.Now()
 
-		if h.status == 200 {
-			fmt.Println("[" + strconv.Itoa(h.status) + "] " + h.url)
-		}
+	go workerPool(*conc, reqChan, respChan)
+
+	conns, size := consumer(totalReq, respChan)
+	if conns >= int64(totalReq) {
+		close(reqChan)
 	}
 
-	wg.Wait()
+	took := time.Since(start)
+	ns := took.Nanoseconds()
+	av := ns / conns
 
-	fmt.Println("finito.")
+	average, err := time.ParseDuration(fmt.Sprintf("%d", av) + "ns")
+	if err != nil {
+		log.Println(err)
+	}
+
+	fmt.Printf("Connections:\t%d\nConcurrent:\t%d\nTotal size:\t%d bytes\nTotal time:\t%s\nAverage time:\t%s\n", conns, conc, size, took, average)
 }
 
-func check(u string, c chan hit) {
-	defer wg.Done()
-
-	req, err := http.NewRequest(http.MethodGet, u, nil)
+func dispatcher(url string, reqChan chan *http.Request) {
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		log.Fatal(err)
+		log.Print(url)
 	}
+	reqChan <- req
+}
 
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		fmt.Println(err.Error())
-		return
-		c <- hit{
-			url:    u,
-			status: 404,
-		}
-		if ue, ok := err.(*url.Error); ok {
-			if strings.HasPrefix(ue.Err.Error(), "x509") {
-				log.Fatal(fmt.Sprintf("invalid certificate: %v", ue.Err))
+func workerPool(max int, reqChan chan *http.Request, respChan chan response) {
+	t := &http.Transport{
+		DisableKeepAlives: true,
+	}
+	for i := 0; i < max; i++ {
+		go worker(t, reqChan, respChan)
+	}
+}
+
+func worker(t *http.Transport, reqChan chan *http.Request, respChan chan response) {
+	for req := range reqChan {
+		resp, err := t.RoundTrip(req)
+		r := response{resp, err}
+		respChan <- r
+	}
+}
+
+func consumer(reqs int, respChan chan response) (int64, int64) {
+	var (
+		conns int64
+		size  int64
+	)
+	for conns < int64(reqs) {
+		select {
+		case r, ok := <-respChan:
+			if ok {
+				if r.err != nil {
+					log.Print(r.Request.URL)
+				} else {
+					size += r.ContentLength
+					if err := r.Body.Close(); err != nil {
+						log.Println(r.err)
+					}
+
+					if r.StatusCode == 200 {
+						fmt.Println(r.Request.URL)
+					}
+
+				}
+				conns++
 			}
 		}
-		return
 	}
-
-	c <- hit{
-		url:    u,
-		status: resp.StatusCode,
-	}
+	return conns, size
 }
 
 func readLines(path string) ([]string, error) {
