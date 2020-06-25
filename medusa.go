@@ -2,15 +2,19 @@ package main
 
 import (
 	"bufio"
+	"crypto/tls"
 	"flag"
 	"fmt"
-	"log"
-	"net/http"
+	"net"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/panjf2000/ants"
+	"github.com/valyala/fasthttp"
 )
 
 const (
@@ -36,33 +40,24 @@ var (
 	cn              = flag.String("cN", "", "")
 	e               = flag.String("e", "", "")
 	s               = flag.String("s", "", "")
+	t               = flag.Int("t", 10, "")
 	insecure        = flag.Bool("x", false, "")
 	followRedirects = flag.Bool("follow", false, "")
 	recursive       = flag.Bool("r", false, "")
 
-	rcp = flag.String("rcP", "200", "")
-	wl  = flag.String("w", "", "")
+	wl = flag.String("w", "", "")
 
 	conc = flag.Int("conc", 100, "")
 
 	cpus = flag.Int("cpus", runtime.GOMAXPROCS(-1), "")
+
+	client *fasthttp.Client
+	p      *ants.PoolWithFunc
+	wg     *sync.WaitGroup
+
+	pCodes = []string{}
+	nCodes = []string{}
 )
-
-//hit All found URLs are collected as hits.
-type hit struct {
-	url    string
-	status int
-}
-
-type hits struct {
-	m sync.RWMutex
-	l map[string]hit
-}
-
-type response struct {
-	*http.Response
-	err error
-}
 
 var usage = `Usage: medusa [options...]
 Options:
@@ -75,8 +70,8 @@ Options:
 -cN                   Negative status codes (seperate by comma)
 -x                    Bypass SSL verification
 -follow               Follow redirects
--r                    Enable recursive fuzzing
--rcP                  Positive status codes for recursive fuzzing (seperate by comma)
+-t                    HTTP response timeout (10s)
+-r                    Enable recursive fuzzing *
 -w                    Directory wordlist (line by line)
 -conc                 Maximum concurrent requests
 -cpus                 Number of used cpu cores.
@@ -95,7 +90,6 @@ medusa v%s by rizasabuncu
 [*] Bypass SSL verification %t
 [*] Follow redirects: %t
 [*] Recursive fuzz: %t
-[*] Recursive positive status codes: %s
 [*] Wordlist path: %s
 [*] Wordlist length: %d
 -----------------------------------------
@@ -111,8 +105,6 @@ func main() {
 		usageAndExit("")
 	}
 
-	runtime.GOMAXPROCS(*cpus)
-
 	if len(*u)+len(*ul) <= 0 {
 		usageAndExit("-u or -uL cannot be empty")
 	}
@@ -121,11 +113,20 @@ func main() {
 		usageAndExit("-w cannot be empty")
 	}
 
-	var urlType = urlTypeSingle
-	var urls = []string{}
-	var wordlist = []string{}
-	var err error
-	var scanURL = *u
+	runtime.GOMAXPROCS(*cpus)
+	defer ants.Release()
+
+	var (
+		urlType  = urlTypeSingle
+		urls     = []string{}
+		wordlist = []string{}
+
+		err     error
+		scanURL = *u
+	)
+
+	pCodes = parseStatusCode(*cp)
+	nCodes = parseStatusCode(*cn)
 
 	if len(*ul) > len(*u) {
 		urlType = urlTypeMultiple
@@ -135,7 +136,6 @@ func main() {
 	switch urlType {
 	case urlTypeSingle:
 		urls = append(urls, scanURL)
-		logInfo("URL loaded (" + *u + ")")
 		break
 	case urlTypeMultiple:
 
@@ -171,124 +171,111 @@ func main() {
 		*insecure,
 		*followRedirects,
 		*recursive,
-		*rcp,
 		*wl, len(wordlist),
 	)
 
-	/* var scanl = &scan{}
-	scanl.l = make(map[string][]string) */
+	wg = &sync.WaitGroup{}
 
-	var hits = &hits{}
-	hits.l = make(map[string]hit)
-
-	reqChan := make(chan *http.Request)
-	respChan := make(chan response)
-
-	totalReq := len(urls) * len(wordlist)
-
-	for _, u := range urls {
-
-		for _, w := range wordlist {
-			var url = u
-
-			if !strings.Contains(url, "http") || !strings.Contains(url, "https") {
-				if len(*s) <= 0 {
-					url = defaultSchema + schemaSlicer + url
-				}
-			}
-
-			if len(*s) > 0 {
-				if strings.Contains(url, "http") {
-					strings.ReplaceAll(url, "http", *s)
-				} else if strings.Contains(url, "https") {
-					strings.ReplaceAll(url, "https", *s)
-				} else {
-					url = *s + schemaSlicer + url
-				}
-			}
-
-			if url[len(u)-1:] != "/" {
-				url = url + "/"
-			}
-
-			url = url + w
-			go dispatcher(url, reqChan)
-		}
+	client = &fasthttp.Client{
+		Dial: func(addr string) (net.Conn, error) {
+			return fasthttp.DialTimeout(addr, time.Duration(*t)*time.Second)
+		},
+		TLSConfig: &tls.Config{InsecureSkipVerify: *insecure},
 	}
 
 	start := time.Now()
 
-	go workerPool(*conc, reqChan, respChan)
+	p, _ = ants.NewPoolWithFunc(*conc, func(i interface{}) {
+		check(i)
+		wg.Done()
+	})
 
-	conns, size := consumer(totalReq, respChan)
-	if conns >= int64(totalReq) {
-		close(reqChan)
-	}
+	defer p.Release()
 
-	took := time.Since(start)
-	ns := took.Nanoseconds()
-	av := ns / conns
-
-	average, err := time.ParseDuration(fmt.Sprintf("%d", av) + "ns")
-	if err != nil {
-		log.Println(err)
-	}
-
-	fmt.Printf("Connections:\t%d\nConcurrent:\t%d\nTotal size:\t%d bytes\nTotal time:\t%s\nAverage time:\t%s\n", conns, conc, size, took, average)
-}
-
-func dispatcher(url string, reqChan chan *http.Request) {
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		log.Print(url)
-	}
-	reqChan <- req
-}
-
-func workerPool(max int, reqChan chan *http.Request, respChan chan response) {
-	t := &http.Transport{
-		DisableKeepAlives: true,
-	}
-	for i := 0; i < max; i++ {
-		go worker(t, reqChan, respChan)
-	}
-}
-
-func worker(t *http.Transport, reqChan chan *http.Request, respChan chan response) {
-	for req := range reqChan {
-		resp, err := t.RoundTrip(req)
-		r := response{resp, err}
-		respChan <- r
-	}
-}
-
-func consumer(reqs int, respChan chan response) (int64, int64) {
-	var (
-		conns int64
-		size  int64
-	)
-	for conns < int64(reqs) {
-		select {
-		case r, ok := <-respChan:
-			if ok {
-				if r.err != nil {
-					log.Print(r.Request.URL)
-				} else {
-					size += r.ContentLength
-					if err := r.Body.Close(); err != nil {
-						log.Println(r.err)
-					}
-
-					if r.StatusCode == 200 {
-						fmt.Println(r.Request.URL)
-					}
-
-				}
-				conns++
-			}
+	for _, u := range urls {
+		u = urlGenerator(u)
+		for _, w := range wordlist {
+			wg.Add(1)
+			_ = p.Invoke(u + w + *e)
 		}
 	}
-	return conns, size
+
+	wg.Wait()
+
+	took := time.Since(start)
+
+	fmt.Printf("Total time:\t%s", took)
+	fmt.Printf("running goroutines: %d\n", p.Running())
+}
+
+func check(i interface{}) {
+	url := i.(string)
+
+	/* req := fasthttp.AcquireRequest()
+	defer fasthttp.ReleaseRequest(req)
+
+	req.SetRequestURI(url)
+	req.Header.SetMethod("GET")
+	req.Header.Add("User-Agent", *ua)
+
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp) */
+
+	sc, body, err := client.Get(nil, url)
+	if err != nil {
+		logError(err.Error())
+	}
+	/* 	if err := client.DoTimeout(req, resp, time.Duration(*t)*time.Second); err != nil {
+		logError(err.Error())
+	} */
+
+	statusCode := strconv.Itoa(sc)
+
+	if !checkStatusCode(nCodes, statusCode) && checkStatusCode(pCodes, statusCode) {
+		if *recursive {
+			wg.Add(1)
+			_ = p.Invoke(url)
+		}
+
+		logFound(url, statusCode, strconv.Itoa(len(body)))
+	}
+}
+
+func parseStatusCode(codes string) []string {
+	return strings.Split(codes, ",")
+}
+
+func checkStatusCode(s []string, e string) bool {
+	for _, a := range s {
+		if a == e {
+			return true
+		}
+	}
+	return false
+}
+
+func urlGenerator(url string) string {
+	if !strings.Contains(url, "http") || !strings.Contains(url, "https") {
+		if len(*s) <= 0 {
+			url = defaultSchema + schemaSlicer + url
+		}
+	}
+
+	if len(*s) > 0 {
+		if strings.Contains(url, "http") {
+			strings.ReplaceAll(url, "http", *s)
+		} else if strings.Contains(url, "https") {
+			strings.ReplaceAll(url, "https", *s)
+		} else {
+			url = *s + schemaSlicer + url
+		}
+	}
+
+	if url[len(url)-1:] != "/" {
+		url = url + "/"
+	}
+
+	return url
 }
 
 func readLines(path string) ([]string, error) {
@@ -306,8 +293,16 @@ func readLines(path string) ([]string, error) {
 	return lines, scanner.Err()
 }
 
+func logFound(url, status, length string) {
+	fmt.Fprintf(os.Stdin, "["+status+"] "+url+" - "+length+" \n")
+}
+
 func logInfo(msg string) {
 	fmt.Fprintf(os.Stdin, "[+] "+msg+"\n")
+}
+
+func logError(msg string) {
+	fmt.Fprintf(os.Stdin, "[X] "+msg+"\n")
 }
 
 func usageAndExit(msg string) {
