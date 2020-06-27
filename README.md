@@ -6,19 +6,19 @@
 ```
 Usage: medusa [options...]
 Options:
--u                    Single URL
--uL                  URL list file path (line by line)
+-u                    Single URL  
+-uL                   URL list file path (line by line)
 -e                    Extension 
 -s                    Force schema (uses default http if does not contains url)
--ua                  User-agent value (default medusa/0.2.0)
--cP                  Postive status codes (seperate by comma)
--cN                  Negative status codes (seperate by comma)
+-ua                   User-agent value (default %s)
+-cP                   Postive status codes (seperate by comma)
+-cN                   Negative status codes (seperate by comma)
 -x                    Bypass SSL verification
 -t                    HTTP response timeout (10s)
--r                    Enable recursive fuzzing
--w                   Directory wordlist (line by line)
--conc              Maximum concurrent requests
--cpus              Number of used cpu cores.
+-r                    Enable recursive fuzzing *
+-w                    Directory wordlist (line by line)
+-conc                 Maximum concurrent requests
+-cpus                 Number of used cpu cores.
 ```
 
 ## Benchmarks
