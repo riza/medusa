@@ -36,14 +36,13 @@ var (
 
 	ua = flag.String("ua", medusaUA, "")
 
-	cp              = flag.String("cP", "200", "")
-	cn              = flag.String("cN", "", "")
-	e               = flag.String("e", "", "")
-	s               = flag.String("s", "", "")
-	t               = flag.Int("t", 10, "")
-	insecure        = flag.Bool("x", false, "")
-	followRedirects = flag.Bool("follow", false, "")
-	recursive       = flag.Bool("r", false, "")
+	cp        = flag.String("cP", "200", "")
+	cn        = flag.String("cN", "", "")
+	e         = flag.String("e", "", "")
+	s         = flag.String("s", "", "")
+	t         = flag.Int("t", 10, "")
+	insecure  = flag.Bool("x", false, "")
+	recursive = flag.Bool("r", false, "")
 
 	wl = flag.String("w", "", "")
 
@@ -57,6 +56,9 @@ var (
 
 	pCodes = []string{}
 	nCodes = []string{}
+
+	wordlist = []string{}
+	urls     = []string{}
 )
 
 var usage = `Usage: medusa [options...]
@@ -69,7 +71,6 @@ Options:
 -cP                   Postive status codes (seperate by comma)
 -cN                   Negative status codes (seperate by comma)
 -x                    Bypass SSL verification
--follow               Follow redirects
 -t                    HTTP response timeout (10s)
 -r                    Enable recursive fuzzing *
 -w                    Directory wordlist (line by line)
@@ -88,7 +89,6 @@ medusa v%s by rizasabuncu
 [*] Positive status codes: %s
 [*] Negative status codes: %s
 [*] Bypass SSL verification %t
-[*] Follow redirects: %t
 [*] Recursive fuzz: %t
 [*] Wordlist path: %s
 [*] Wordlist length: %d
@@ -117,9 +117,7 @@ func main() {
 	defer ants.Release()
 
 	var (
-		urlType  = urlTypeSingle
-		urls     = []string{}
-		wordlist = []string{}
+		urlType = urlTypeSingle
 
 		err     error
 		scanURL = *u
@@ -169,7 +167,6 @@ func main() {
 		*ua, *e,
 		*cp, *cn,
 		*insecure,
-		*followRedirects,
 		*recursive,
 		*wl, len(wordlist),
 	)
@@ -193,11 +190,7 @@ func main() {
 	defer p.Release()
 
 	for _, u := range urls {
-		u = urlGenerator(u)
-		for _, w := range wordlist {
-			wg.Add(1)
-			_ = p.Invoke(u + w + *e)
-		}
+		invokeAndGeneratePath(u)
 	}
 
 	wg.Wait()
@@ -211,33 +204,28 @@ func main() {
 func check(i interface{}) {
 	url := i.(string)
 
-	/* req := fasthttp.AcquireRequest()
-	defer fasthttp.ReleaseRequest(req)
-
-	req.SetRequestURI(url)
-	req.Header.SetMethod("GET")
-	req.Header.Add("User-Agent", *ua)
-
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(resp) */
-
 	sc, body, err := client.Get(nil, url)
 	if err != nil {
 		logError(err.Error())
 	}
-	/* 	if err := client.DoTimeout(req, resp, time.Duration(*t)*time.Second); err != nil {
-		logError(err.Error())
-	} */
 
 	statusCode := strconv.Itoa(sc)
 
 	if !checkStatusCode(nCodes, statusCode) && checkStatusCode(pCodes, statusCode) {
 		if *recursive {
-			wg.Add(1)
-			_ = p.Invoke(url)
+			go invokeAndGeneratePath(url)
 		}
 
 		logFound(url, statusCode, strconv.Itoa(len(body)))
+	}
+}
+
+func invokeAndGeneratePath(u string) {
+	u = generateURL(u)
+	wg.Add(len(wordlist))
+
+	for _, w := range wordlist {
+		_ = p.Invoke(u + w + *e)
 	}
 }
 
@@ -254,7 +242,7 @@ func checkStatusCode(s []string, e string) bool {
 	return false
 }
 
-func urlGenerator(url string) string {
+func generateURL(url string) string {
 	if !strings.Contains(url, "http") || !strings.Contains(url, "https") {
 		if len(*s) <= 0 {
 			url = defaultSchema + schemaSlicer + url
