@@ -1,58 +1,38 @@
-<img align="right" width="200" src="https://github.com/riza/medusa/blob/master/res/logo_tmp.png?raw=true" />
+# Medusa
 
-# medusa [WIP]
-
-[![Travis](https://img.shields.io/travis/riza/medusa.svg)](https://travis-ci.org/riza/medusa)
-[![Go Report Card](https://goreportcard.com/badge/github.com/riza/medusa)](https://goreportcard.com/report/github.com/riza/medusa)
-[![GoDoc](https://img.shields.io/badge/godoc-reference-blue.svg)](http://godoc.org/github.com/riza/medusa)
-[![codecov](https://codecov.io/gh/riza/medusa/branch/master/graph/badge.svg)](https://codecov.io/gh/riza/medusa)
-[![GitHub version](https://badge.fury.io/gh/riza%2Fmedusa.svg)](https://github.com/riza/medusa/releases)
-
-Blazingly fast directory fuzzer for HTTP
-
-## Build
-
-```bash
-$ go build -tags netgo -installsuffix netgo
-```
+[![Travis](https://img.shields.io/travis/riza/medusa.svg)](https://travis-ci.org/riza/medusa)  [![GitHub version](https://badge.fury.io/gh/riza%2Fmedusa.svg)](https://github.com/riza/medusa/releases) [![Go Report Card](https://goreportcard.com/badge/github.com/riza/medusa)](https://goreportcard.com/report/github.com/riza/medusa) [![GoDoc](https://img.shields.io/badge/godoc-reference-blue.svg)](http://godoc.org/github.com/riza/medusa) [![codecov](https://codecov.io/gh/riza/medusa/branch/master/graph/badge.svg)](https://codecov.io/gh/riza/medusa)
 
 ## Usage
-
-```bash
-Usage of ./medusa:
-  -D string
-        Multiple dir from file
-  -H string
-        Multiple host from file
-  -boundary int
-        Concurrent boundary limit (default 1024)
-  -cc string
-        Collect status code (--c 403,404) (default "200")
-  -cpu int
-        CPU Procs
-  -d string
-        Singular dir
-  -depth int
-        Depth level
-  -h string
-        Singular host
-  -o string
-        Output filename (default "output.txt")
-  -retry int
-        Retry limit per host (default 3)
-  -timeout duration
-        HTTP response timeout (default 500ns)
+```
+Usage: medusa [options...]
+Options:
+-u                    Single URL
+-uL                  URL list file path (line by line)
+-e                    Extension 
+-s                    Force schema (uses default http if does not contains url)
+-ua                  User-agent value (default medusa/0.2.0)
+-cP                  Postive status codes (seperate by comma)
+-cN                  Negative status codes (seperate by comma)
+-x                    Bypass SSL verification
+-t                    HTTP response timeout (10s)
+-r                    Enable recursive fuzzing
+-w                   Directory wordlist (line by line)
+-conc              Maximum concurrent requests
+-cpus              Number of used cpu cores.
 ```
 
-## Contributing
-Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
-Please make sure to update tests as appropriate.
+## Benchmarks
 
-## TODO
+```
+TODO
+```
 
-- [ ] Test conditions
-- [ ] ...
+## Contribution
+```
+TODO
+```
+## Where does the name Medusa come from?
+```
+TODO
+```
 
-
-## License
-[MIT](https://choosealicense.com/licenses/mit/)

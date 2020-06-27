@@ -1,8 +1,4 @@
 medusa
 .vscode/
 vendor/
-big.txt
-common.txt
-urls.txt
-test.txt
-output.txt
+coverage.out

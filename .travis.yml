@@ -1,17 +1,10 @@
 language: go
-sudo: false
 go:
-  - "1.10.x"
-  - "1.11.x"
+  - "1.13.x"
+  - "1.14.x"
+  - tip
 
-before_install:
-  - go get -t -v ./...
-
-matrix:
-  fast_finish: true
-  include:
-  - go: 1.11.x
-    env: GO111MODULE=on
+env: GO111MODULE=on
 
 git:
   depth: 10
@@ -19,7 +12,7 @@ git:
 go_import_path: github.com/riza/medusa
 
 script: 
-  - sh run-test.sh
+  - make test
  
 after_success:
   - bash <(curl -s https://codecov.io/bash)
