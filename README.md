@@ -26,12 +26,6 @@ Options:
 -cpus                 Number of used cpu cores.
 ```
 
-## Benchmarks
-
-```
-TODO
-```
-
 ## Known issues
 
 <details><summary>socket: too many open file</summary>
@@ -41,9 +35,4 @@ The solution to this is to increase ulimit, you can solve this problem by typing
 
 </p>
 </details>
-
-## Where does the name Medusa come from?
-```
-TODO
-```
 
