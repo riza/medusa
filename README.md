@@ -32,10 +32,15 @@ Options:
 TODO
 ```
 
-## Contribution
-```
-TODO
-```
+## Known issues
+
+<details><summary>socket: too many open file</summary>
+<p>
+
+#### The solution to this is to increase ulimit, you can solve this problem by typing `ulimit -n 8129` before running Medusa.
+
+</p>
+</details>
 ## Where does the name Medusa come from?
 ```
 TODO
