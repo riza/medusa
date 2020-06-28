@@ -19,8 +19,9 @@ Options:
 -cN                   Negative status codes (seperate by comma)
 -x                    Bypass SSL verification
 -t                    HTTP response timeout (10s)
--r                    Enable recursive fuzzing *
+-r                    Enable recursive fuzzing
 -w                    Directory wordlist (line by line)
+-v                    Verbose mode, show logs
 -conc                 Maximum concurrent requests
 -cpus                 Number of used cpu cores.
 ```
