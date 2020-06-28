@@ -6,20 +6,23 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/panjf2000/ants"
 	"github.com/valyala/fasthttp"
+	"gopkg.in/gookit/color.v1"
 )
 
 const (
-	medusaUA = "medusa/0.2.0"
-	version  = "0.2.0"
+	medusaUA = "medusa/0.2.1"
+	version  = "0.2.1"
 )
 
 const (
@@ -28,6 +31,8 @@ const (
 
 	defaultSchema = "http"
 	schemaSlicer  = "://"
+
+	sameBodyLengthCountAlarm = 3
 )
 
 var (
@@ -41,6 +46,7 @@ var (
 	e         = flag.String("e", "", "")
 	s         = flag.String("s", "", "")
 	t         = flag.Int("t", 10, "")
+	v         = flag.Bool("v", false, "")
 	insecure  = flag.Bool("x", false, "")
 	recursive = flag.Bool("r", false, "")
 
@@ -59,6 +65,9 @@ var (
 
 	wordlist = []string{}
 	urls     = []string{}
+
+	sameBodyWarningHost, currentBody atomic.Value
+	sameBodyLengthCount              int32
 )
 
 var usage = `Usage: medusa [options...]
@@ -74,6 +83,7 @@ Options:
 -t                    HTTP response timeout (10s)
 -r                    Enable recursive fuzzing *
 -w                    Directory wordlist (line by line)
+-v                    Verbose mode, show logs
 -conc                 Maximum concurrent requests
 -cpus                 Number of used cpu cores.
 (default for current machine is %d cores)
@@ -92,6 +102,7 @@ medusa v%s by rizasabuncu
 [*] Recursive fuzz: %t
 [*] Wordlist path: %s
 [*] Wordlist length: %d
+[*] Max concurrent connection: %d
 -----------------------------------------
 `
 
@@ -169,6 +180,7 @@ func main() {
 		*insecure,
 		*recursive,
 		*wl, len(wordlist),
+		*conc,
 	)
 
 	wg = &sync.WaitGroup{}
@@ -182,8 +194,8 @@ func main() {
 
 	start := time.Now()
 
-	p, _ = ants.NewPoolWithFunc(*conc, func(i interface{}) {
-		check(i)
+	p, _ = ants.NewPoolWithFunc(*conc, func(u interface{}) {
+		check(u)
 		wg.Done()
 	})
 
@@ -196,27 +208,57 @@ func main() {
 	wg.Wait()
 
 	took := time.Since(start)
+	logInfo(fmt.Sprintf("Total time:\t%s", took))
 
-	fmt.Printf("Total time:\t%s", took)
-	fmt.Printf("running goroutines: %d\n", p.Running())
 }
 
 func check(i interface{}) {
 	url := i.(string)
 
+	host := getHost(url)
+
+	//skip samebody
+	if sameBodyWarningHost.Load() != nil && host == sameBodyWarningHost.Load().(string) {
+		return
+	}
+
 	sc, body, err := client.Get(nil, url)
 	if err != nil {
-		logError(err.Error())
+		if err != fasthttp.ErrDialTimeout {
+			logError(err.Error())
+		}
 	}
 
 	statusCode := strconv.Itoa(sc)
-
 	if !checkStatusCode(nCodes, statusCode) && checkStatusCode(pCodes, statusCode) {
-		if *recursive {
-			go invokeAndGeneratePath(url)
-		}
+		if currentBody.Load() != nil && currentBody.Load().(int) == len(body) {
+			if sameBodyLengthCount >= sameBodyLengthCountAlarm {
+				if sameBodyWarningHost.Load() == nil {
+					sameBodyWarningHost.Store(host)
+					logInfo("Same body detected, skipping host: " + host)
+					return
+				}
 
-		logFound(url, statusCode, strconv.Itoa(len(body)))
+				if host != sameBodyWarningHost.Load().(string) {
+					sameBodyWarningHost.Store(host)
+				}
+				return
+			}
+			atomic.AddInt32(&sameBodyLengthCount, 1)
+		} else {
+
+			if sameBodyLengthCount != 0 {
+				sameBodyLengthCount = 0
+			}
+
+			if *recursive {
+				go invokeAndGeneratePath(url)
+			}
+
+			currentBody.Store(len(body))
+
+			logFound(url, statusCode, strconv.Itoa(len(body)))
+		}
 	}
 }
 
@@ -227,10 +269,21 @@ func invokeAndGeneratePath(u string) {
 	for _, w := range wordlist {
 		_ = p.Invoke(u + w + *e)
 	}
+
 }
 
 func parseStatusCode(codes string) []string {
 	return strings.Split(codes, ",")
+}
+
+func getHost(u string) string {
+	pu, err := url.Parse(u)
+
+	if err != nil {
+		return ""
+	}
+
+	return pu.Host
 }
 
 func checkStatusCode(s []string, e string) bool {
@@ -242,28 +295,28 @@ func checkStatusCode(s []string, e string) bool {
 	return false
 }
 
-func generateURL(url string) string {
-	if !strings.Contains(url, "http") || !strings.Contains(url, "https") {
+func generateURL(u string) string {
+	if !strings.Contains(u, "http") || !strings.Contains(u, "https") {
 		if len(*s) <= 0 {
-			url = defaultSchema + schemaSlicer + url
+			u = defaultSchema + schemaSlicer + u
 		}
 	}
 
 	if len(*s) > 0 {
-		if strings.Contains(url, "http") {
-			strings.ReplaceAll(url, "http", *s)
-		} else if strings.Contains(url, "https") {
-			strings.ReplaceAll(url, "https", *s)
+		if strings.Contains(u, "http") {
+			strings.ReplaceAll(u, "http", *s)
+		} else if strings.Contains(u, "https") {
+			strings.ReplaceAll(u, "https", *s)
 		} else {
-			url = *s + schemaSlicer + url
+			u = *s + schemaSlicer + u
 		}
 	}
 
-	if url[len(url)-1:] != "/" {
-		url = url + "/"
+	if u[len(u)-1:] != "/" {
+		u = u + "/"
 	}
 
-	return url
+	return u
 }
 
 func readLines(path string) ([]string, error) {
@@ -282,20 +335,23 @@ func readLines(path string) ([]string, error) {
 }
 
 func logFound(url, status, length string) {
-	fmt.Fprintf(os.Stdin, "["+status+"] "+url+" - "+length+" \n")
+	color.Green.Print("[" + status + "] ")
+	fmt.Println(url + " - " + length)
 }
 
 func logInfo(msg string) {
-	fmt.Fprintf(os.Stdin, "[+] "+msg+"\n")
+	color.Yellow.Print("[+] ")
+	fmt.Println(msg)
 }
 
 func logError(msg string) {
-	fmt.Fprintf(os.Stdin, "[X] "+msg+"\n")
+	color.Red.Print("[ERR] ")
+	fmt.Println(msg)
 }
 
 func usageAndExit(msg string) {
 	if msg != "" {
-		fmt.Fprintf(os.Stderr, msg)
+		logError(msg)
 		fmt.Fprintf(os.Stderr, "\n\n")
 	}
 	flag.Usage()

@@ -12,3 +12,11 @@ test:
 			rm profile.out; \
 		fi; \
 	done
+
+release:
+	mkdir releases;
+	for GOOS in darwin linux windows; do \
+			for GOARCH in 386 amd64; do \
+					$(GO) build -v -o releases/medusa-$$GOOS-$$GOARCH; \
+			done \
+	done \
