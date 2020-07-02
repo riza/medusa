@@ -1,3 +1,5 @@
+<img align="right" width="200" src="https://github.com/riza/medusa/blob/master/res/logo.png?raw=true" />
+
 # Medusa
 > Fastest recursive HTTP fuzzer, like a Ferrari.
 
